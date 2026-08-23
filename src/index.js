@@ -60,16 +60,39 @@ function formatDate(dateString) {
   return `${year}-${month}-${day}`;
 }
 
-// 批量文本自动解析与季度批次归类函数（直接加在下方）
+// ================================
+// 批量文本自动解析与季度批次归类函数（支持自动识别首行注册邮箱）
+// ================================
 function parseBatchDomainText(rawText) {
   const lines = rawText.split('\n');
   const parsedDomains = [];
+  let defaultAccount = '';
 
+  // 1. 优先扫描前 5 行，提取单独填写的注册邮箱 (例如: abc@gmail.com 或 账号: abc@gmail.com)
+  const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
+  for (let i = 0; i < Math.min(lines.length, 5); i++) {
+    const trimmed = lines[i].trim();
+    // 排除包含常见域名操作词的行，精准匹配邮箱首行
+    if (trimmed && !trimmed.includes('Parking') && !trimmed.includes('Custom') && !trimmed.includes('Renew')) {
+      const emailMatch = trimmed.match(emailRegex);
+      if (emailMatch) {
+        defaultAccount = emailMatch;
+        break;
+      }
+    }
+  }
+
+  // 2. 逐行解析域名数据
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
 
-    // 匹配域名 (如 zzt.pp.ua)
+    // 如果整行只是纯邮箱，则跳过该行
+    if (defaultAccount && line === defaultAccount) {
+      continue;
+    }
+
+    // 匹配域名 (如 aba.pp.ua)
     const domainMatch = line.match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
     // 匹配英文日期 (如 02 Jun 2027) 或 标准日期 (如 2027-06-02)
     const enDateMatch = line.match(/(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/);
@@ -77,15 +100,15 @@ function parseBatchDomainText(rawText) {
 
     let expiryDate = null;
     if (enDateMatch) {
-      expiryDate = new Date(enDateMatch[1]);
+      expiryDate = new Date(enDateMatch);
     } else if (isoDateMatch) {
-      expiryDate = new Date(isoDateMatch[1]);
+      expiryDate = new Date(isoDateMatch);
     }
 
     if (domainMatch && expiryDate && !isNaN(expiryDate.getTime())) {
-      const domainName = domainMatch[1].toLowerCase();
+      const domainName = domainMatch.toLowerCase();
 
-      // 推算注册时间：默认从到期日往前扣除1年（如 2027-06-02 -> 2026-06-02）
+      // 推算注册时间：默认从到期日往前扣除1年
       let regDate = new Date(expiryDate);
       regDate.setFullYear(regDate.getFullYear() - 1);
 
@@ -106,6 +129,7 @@ function parseBatchDomainText(rawText) {
         registrationDate: formatDate(regDate.toISOString()),
         categoryName: categoryName,
         registrar: registrar,
+        registeredAccount: defaultAccount, // 自动填入首行识别到的注册邮箱！
         renewLink: domainName.endsWith('.pp.ua') ? 'https://nic.ua/en/my/domains' : '',
         renewCycle: { value: 1, unit: 'year' },
         notifySettings: { useGlobalSettings: true, enabled: true, notifyDays: 30 }
@@ -7395,7 +7419,7 @@ async function handleApiRequest(request) {
     }
   }
 
-  // 批量导入并自动分类域名 API（新增部分）
+// 批量导入并自动分类域名 API
   if (path === '/api/batch-import' && request.method === 'POST') {
     try {
       const { text } = await request.json();
@@ -7444,13 +7468,14 @@ async function handleApiRequest(request) {
         const existIndex = currentDomains.findIndex(d => d.name.toLowerCase() === item.name.toLowerCase());
 
         if (existIndex > -1) {
-          // 更新已有域名
+          // 更新已有域名（同步更新注册邮箱）
           currentDomains[existIndex] = {
             ...currentDomains[existIndex],
             expiryDate: item.expiryDate,
             registrationDate: item.registrationDate,
             categoryId: categoryId,
             registrar: item.registrar || currentDomains[existIndex].registrar,
+            registeredAccount: item.registeredAccount || currentDomains[existIndex].registeredAccount || '',
             updatedAt: new Date().toISOString()
           };
           updatedCount++;
@@ -7462,7 +7487,7 @@ async function handleApiRequest(request) {
             expiryDate: item.expiryDate,
             registrationDate: item.registrationDate,
             registrar: item.registrar,
-            registeredAccount: '',
+            registeredAccount: item.registeredAccount || '', // 自动填入注册邮箱
             categoryId: categoryId,
             customNote: '',
             noteColor: 'tag-blue',
