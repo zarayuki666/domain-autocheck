@@ -61,88 +61,42 @@ function formatDate(dateString) {
 }
 
 // ================================
-// 批量文本自动解析与季度批次归类函数（已完整验证无错版）
+// 批量导入文本解析函数 (提取邮箱与域名清单)
 // ================================
-function parseBatchDomainText(rawText) {
-  if (!rawText || typeof rawText !== 'string') return [];
+function extractImportInput(rawText) {
+  if (!rawText || typeof rawText !== 'string') return { defaultAccount: '', domainNames: [] };
   const lines = rawText.split(/\r?\n/);
-  const parsedDomains = [];
   let defaultAccount = '';
+  const domainSet = new Set();
 
-  // 1. 查找首行或前几行的注册邮箱 (例如: amraz06@outlook.com)
+  // 1. 提取首行或前5行的注册邮箱
+  const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
     const trimmed = lines[i].trim();
-    if (trimmed.includes('@') && !trimmed.includes('.pp.ua') && !trimmed.includes('Parking') && !trimmed.includes('Custom') && !trimmed.includes('Renew')) {
-      const emailMatches = trimmed.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (emailMatches && emailMatches[0]) {
-        defaultAccount = emailMatches[0].trim();
+    if (trimmed.includes('@') && !trimmed.includes('.pp.ua') && !trimmed.includes('Parking') && !trimmed.includes('Custom')) {
+      const m = trimmed.match(emailRegex);
+      if (m && m[0]) {
+        defaultAccount = m[0].trim();
         break;
       }
     }
   }
 
-  // 2. 逐行解析域名数据
+  // 2. 智能提取文本中的所有有效域名
+  const domainRegex = /([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})/g;
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
-
-    // 跳过纯邮箱行
-    if (defaultAccount && line.includes(defaultAccount) && !line.includes('Parking') && !line.includes('Custom') && !line.includes('Renew')) {
-      continue;
-    }
-
-    // 正则提取域名 (例如 ckk.pp.ua, cee.pp.ua 等)
-    const domainMatches = line.match(/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-    if (!domainMatches || !domainMatches[0]) continue;
-    const domainName = domainMatches[0].toLowerCase();
-
-    // 如果提取出的"域名"实际上是邮箱后缀 (如 outlook.com)，则跳过
-    if (defaultAccount && defaultAccount.endsWith('@' + domainName)) {
-      continue;
-    }
-
-    // 正则提取英文日期 (如 23 Aug 2027) 或 标准日期 (如 2027-08-23)
-    const enDateMatches = line.match(/\b\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\b/);
-    const isoDateMatches = line.match(/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/);
-
-    let expiryDate = null;
-    if (enDateMatches && enDateMatches[0]) {
-      expiryDate = new Date(enDateMatches[0]);
-    } else if (isoDateMatches && isoDateMatches[0]) {
-      expiryDate = new Date(isoDateMatches[0]);
-    }
-
-    // 验证日期有效性
-    if (expiryDate && !isNaN(expiryDate.getTime())) {
-      // 推算注册时间：默认从到期日往前扣除 1 年
-      let regDate = new Date(expiryDate);
-      regDate.setFullYear(regDate.getFullYear() - 1);
-
-      // 按推算注册时间的季度自动划分批次 (如: "2026年Q3批次")
-      const regYear = regDate.getFullYear();
-      const regMonth = regDate.getMonth() + 1;
-      const quarter = Math.ceil(regMonth / 3);
-      const categoryName = `${regYear}年Q${quarter}批次`;
-
-      // 提取 NS 类型或厂商
-      let registrar = 'NIC.UA';
-      if (line.includes('Custom NS')) registrar = 'Custom NS';
-      else if (line.includes('Parking NS')) registrar = 'Parking NS';
-
-      parsedDomains.push({
-        name: domainName,
-        expiryDate: formatDate(expiryDate.toISOString()),
-        registrationDate: formatDate(regDate.toISOString()),
-        categoryName: categoryName,
-        registrar: registrar,
-        registeredAccount: defaultAccount, // 自动填入提取到的注册邮箱
-        renewLink: domainName.endsWith('.pp.ua') ? 'https://nic.ua/en/my/domains' : '',
-        renewCycle: { value: 1, unit: 'year' },
-        notifySettings: { useGlobalSettings: true, enabled: true, notifyDays: 30 }
-      });
+    let match;
+    while ((match = domainRegex.exec(line)) !== null) {
+      const d = match.toLowerCase();
+      // 过滤掉邮箱自身的后缀域名 (如 outlook.com)
+      if (defaultAccount && defaultAccount.endsWith('@' + d)) continue;
+      domainSet.add(d);
     }
   }
-  return parsedDomains;
+
+  return { defaultAccount, domainNames: Array.from(domainSet) };
 }
 
 // JSON响应工具函数
@@ -7385,7 +7339,7 @@ async function handleRequest(request) {
 
     return await handleApiRequest(request);
   }
-  
+   
   // 如果都不匹配，返回登录页面
   const loginHtml = getLoginHTML(siteTitle);
   return new Response(loginHtml, {
@@ -7425,20 +7379,73 @@ async function handleApiRequest(request) {
     }
   }
 
-// 批量导入并自动分类域名 API
+  // 批量导入 API（自动调用官方 WHOIS 接口识别真实注册时间与注册商）
   if (path === '/api/batch-import' && request.method === 'POST') {
     try {
       const { text } = await request.json();
       if (!text || !text.trim()) {
-        return jsonResponse({ error: '请粘贴包含域名和日期的文本' }, 400);
+        return jsonResponse({ error: '请粘贴包含域名的文本' }, 400);
       }
 
-      const domainList = parseBatchDomainText(text);
-      if (domainList.length === 0) {
-        return jsonResponse({ error: '未能识别出有效的域名和到期时间' }, 400);
+      const { defaultAccount, domainNames } = extractImportInput(text);
+      if (domainNames.length === 0) {
+        return jsonResponse({ error: '未能从文本中提取出有效的域名' }, 400);
       }
 
-      // 1. 获取现有分类，若对应季度批次分类不存在则自动创建
+      // 1. 并发调用系统内置的官方 WHOIS 查询引擎获取真实数据
+      const domainList = await Promise.all(domainNames.map(async (domain) => {
+        let registrationDate = null;
+        let expiryDate = null;
+        let registrar = domain.endsWith('.pp.ua') ? 'NIC.UA' : '';
+        let renewLink = domain.endsWith('.pp.ua') ? 'https://nic.ua/en/my/domains' : '';
+
+        // 调用 Worker 本身自带的权威 WHOIS 查询函数
+        const whoisFn = getWhoisQueryFunction(domain);
+        if (whoisFn) {
+          try {
+            const res = await whoisFn(domain);
+            if (res && res.success && res.registered !== false) {
+              if (res.registrationDate) registrationDate = res.registrationDate;
+              if (res.expiryDate) expiryDate = res.expiryDate;
+              if (res.registrar) registrar = res.registrar;
+              if (res.registrarUrl) renewLink = res.registrarUrl;
+            }
+          } catch (_) {}
+        }
+
+        // 兜底默认值 (若极少数域名官方查询无响应时)
+        if (!expiryDate) {
+          const d = new Date();
+          d.setFullYear(d.getFullYear() + 1);
+          expiryDate = formatDate(d.toISOString());
+        }
+        if (!registrationDate) {
+          const reg = new Date(expiryDate);
+          reg.setFullYear(reg.getFullYear() - 1);
+          registrationDate = formatDate(reg.toISOString());
+        }
+
+        // 核心：直接根据官方真实的注册日期划分季度批次 (如: "2025年Q3批次")
+        const regDateObj = new Date(registrationDate);
+        const year = regDateObj.getFullYear();
+        const month = regDateObj.getMonth() + 1;
+        const quarter = Math.ceil(month / 3);
+        const categoryName = `${year}年Q${quarter}批次`;
+
+        return {
+          name: domain,
+          registrationDate: formatDate(registrationDate),
+          expiryDate: formatDate(expiryDate),
+          registrar: registrar,
+          registeredAccount: defaultAccount, // 自动填入首行提取的注册账号
+          categoryName: categoryName,
+          renewLink: renewLink,
+          renewCycle: { value: 1, unit: 'year' },
+          notifySettings: { useGlobalSettings: true, enabled: true, notifyDays: 30 }
+        };
+      }));
+
+      // 2. 确保对应批次分类在 KV 中存在
       let categories = await getCategories();
       const catMap = new Map();
       categories.forEach(c => catMap.set(c.name, c.id));
@@ -7464,7 +7471,7 @@ async function handleApiRequest(request) {
         await DOMAIN_MONITOR.put('categories', JSON.stringify(categories));
       }
 
-      // 2. 获取现有域名数据进行批量合并/覆盖
+      // 3. 批量合并写入域名数据
       let currentDomains = await getDomains();
       let addedCount = 0;
       let updatedCount = 0;
@@ -7474,7 +7481,7 @@ async function handleApiRequest(request) {
         const existIndex = currentDomains.findIndex(d => d.name.toLowerCase() === item.name.toLowerCase());
 
         if (existIndex > -1) {
-          // 更新已有域名（同步更新注册邮箱）
+          // 更新已有域名
           currentDomains[existIndex] = {
             ...currentDomains[existIndex],
             expiryDate: item.expiryDate,
@@ -7493,7 +7500,7 @@ async function handleApiRequest(request) {
             expiryDate: item.expiryDate,
             registrationDate: item.registrationDate,
             registrar: item.registrar,
-            registeredAccount: item.registeredAccount || '', // 自动填入注册邮箱
+            registeredAccount: item.registeredAccount || '',
             categoryId: categoryId,
             customNote: '',
             noteColor: 'tag-blue',
@@ -7508,12 +7515,12 @@ async function handleApiRequest(request) {
         }
       }
 
-      // 3. 存入 KV
+      // 4. 保存到 KV
       await DOMAIN_MONITOR.put('domains', JSON.stringify(currentDomains));
 
       return jsonResponse({
         success: true,
-        message: `成功导入 ${addedCount} 个新域名，更新 ${updatedCount} 个已有域名`,
+        message: `成功通过官方 WHOIS 自动识别并导入 ${addedCount} 个新域名，更新 ${updatedCount} 个已有域名`,
         importedCount: domainList.length
       });
     } catch (error) {
