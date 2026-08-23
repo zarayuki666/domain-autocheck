@@ -61,7 +61,7 @@ function formatDate(dateString) {
 }
 
 // ================================
-// 批量导入文本解析函数 (提取邮箱与域名清单)
+// 批量导入文本解析函数 (已严谨修复数组索引)
 // ================================
 function extractImportInput(rawText) {
   if (!rawText || typeof rawText !== 'string') return { defaultAccount: '', domainNames: [] };
@@ -70,29 +70,29 @@ function extractImportInput(rawText) {
   const domainSet = new Set();
 
   // 1. 提取首行或前5行的注册邮箱
-  const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
     const trimmed = lines[i].trim();
     if (trimmed.includes('@') && !trimmed.includes('.pp.ua') && !trimmed.includes('Parking') && !trimmed.includes('Custom')) {
-      const m = trimmed.match(emailRegex);
-      if (m && m[0]) {
-        defaultAccount = m[0].trim();
+      const emailMatches = trimmed.match(emailRegex);
+      if (emailMatches && emailMatches.length > 0) {
+        defaultAccount = String(emailMatches[0]).trim();
         break;
       }
     }
   }
 
-  // 2. 智能提取文本中的所有有效域名
-  const domainRegex = /([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})/g;
+  // 2. 智能提取文本中的所有有效域名 (严格使用 match[0] 提取字符串)
+  const domainRegex = /[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}/g;
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
     let match;
     while ((match = domainRegex.exec(line)) !== null) {
-      const d = match.toLowerCase();
+      const domainStr = String(match[0]).toLowerCase();
       // 过滤掉邮箱自身的后缀域名 (如 outlook.com)
-      if (defaultAccount && defaultAccount.endsWith('@' + d)) continue;
-      domainSet.add(d);
+      if (defaultAccount && defaultAccount.toLowerCase().endsWith('@' + domainStr)) continue;
+      domainSet.add(domainStr);
     }
   }
 
