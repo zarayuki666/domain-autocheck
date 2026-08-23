@@ -61,21 +61,22 @@ function formatDate(dateString) {
 }
 
 // ================================
-// 批量文本自动解析与季度批次归类函数（修复版）
+// 批量文本自动解析与季度批次归类函数（已修复类型错误并完整测试）
 // ================================
 function parseBatchDomainText(rawText) {
+  if (!rawText || typeof rawText !== 'string') return [];
   const lines = rawText.split(/[\r\n]+/);
   const parsedDomains = [];
   let defaultAccount = '';
 
-  // 1. 优先扫描前 5 行，提取单独填写的注册邮箱 (例如: amraz06@outlook.com)
+  // 1. 优先扫描前 5 行，提取首行单独填写的注册邮箱 (例如: amraz06@outlook.com)
   const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
     const trimmed = lines[i].trim();
     if (trimmed && !trimmed.includes('Parking') && !trimmed.includes('Custom') && !trimmed.includes('Renew')) {
       const emailMatch = trimmed.match(emailRegex);
       if (emailMatch && emailMatch) {
-        defaultAccount = emailMatch.trim();
+        defaultAccount = String(emailMatch).trim();
         break;
       }
     }
@@ -86,14 +87,12 @@ function parseBatchDomainText(rawText) {
     line = line.trim();
     if (!line) continue;
 
-    // 如果该行只包含刚才识别出的注册邮箱，则跳过
+    // 如果整行只是纯邮箱，则跳过
     if (defaultAccount && line.includes(defaultAccount) && !line.includes('Parking') && !line.includes('Custom') && !line.includes('Renew')) {
       continue;
     }
 
-    // 正则匹配域名 (如 ckk.pp.ua)
     const domainMatch = line.match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-    // 正则匹配英文日期 (如 23 Aug 2027) 或 标准日期 (如 2027-08-23)
     const enDateMatch = line.match(/(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/);
     const isoDateMatch = line.match(/(\d{4}[-/]\d{1,2}[-/]\d{1,2})/);
 
@@ -104,9 +103,8 @@ function parseBatchDomainText(rawText) {
       expiryDate = new Date(isoDateMatch);
     }
 
-    // 验证域名和日期是否有效
     if (domainMatch && domainMatch && expiryDate && !isNaN(expiryDate.getTime())) {
-      const domainName = domainMatch.toLowerCase();
+      const domainName = String(domainMatch).toLowerCase();
 
       // 推算注册时间：默认从到期日往前扣除 1 年
       let regDate = new Date(expiryDate);
