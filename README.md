@@ -123,5 +123,5 @@ Fork 部署可以保持与上游仓库的关联，方便后续通过 **Sync fork
 如需更新，只要重新复制粘贴代码即可；域名数据存储在 `KV` 中，保持 `KV` 不变不会丢失数据。  
 > 🚨如果你在代码中手动填写了变量，更新前请先备份这些值。
 
-## ⭐ Star 星星走起
+## ⭐ Star 星星点起
 ![Star History](https://api.star-history.com/svg?repos=jy02739244/domain-autocheck&type=Date)
