@@ -51,13 +51,68 @@ const DEFAULT_SITE_NAME = ''; // 默认网站标题，外置变量为SITE_NAME
 // 工具函数区域
 // ================================
 
-// 格式化日期函数
+// 格式化日期函数（保留原来的）
 function formatDate(dateString) {
   const date = new Date(dateString);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+// 批量文本自动解析与季度批次归类函数（直接加在下方）
+function parseBatchDomainText(rawText) {
+  const lines = rawText.split('\n');
+  const parsedDomains = [];
+
+  for (let line of lines) {
+    line = line.trim();
+    if (!line) continue;
+
+    // 匹配域名 (如 zzt.pp.ua)
+    const domainMatch = line.match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    // 匹配英文日期 (如 02 Jun 2027) 或 标准日期 (如 2027-06-02)
+    const enDateMatch = line.match(/(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/);
+    const isoDateMatch = line.match(/(\d{4}[-/]\d{1,2}[-/]\d{1,2})/);
+
+    let expiryDate = null;
+    if (enDateMatch) {
+      expiryDate = new Date(enDateMatch[1]);
+    } else if (isoDateMatch) {
+      expiryDate = new Date(isoDateMatch[1]);
+    }
+
+    if (domainMatch && expiryDate && !isNaN(expiryDate.getTime())) {
+      const domainName = domainMatch[1].toLowerCase();
+
+      // 推算注册时间：默认从到期日往前扣除1年（如 2027-06-02 -> 2026-06-02）
+      let regDate = new Date(expiryDate);
+      regDate.setFullYear(regDate.getFullYear() - 1);
+
+      // 按推算注册时间的季度自动划分批次（如: "2026年Q2批次"）
+      const regYear = regDate.getFullYear();
+      const regMonth = regDate.getMonth() + 1;
+      const quarter = Math.ceil(regMonth / 3);
+      const categoryName = `${regYear}年Q${quarter}批次`;
+
+      // 提取 NS 类型或厂商
+      let registrar = 'NIC.UA';
+      if (line.includes('Custom NS')) registrar = 'Custom NS';
+      else if (line.includes('Parking NS')) registrar = 'Parking NS';
+
+      parsedDomains.push({
+        name: domainName,
+        expiryDate: formatDate(expiryDate.toISOString()),
+        registrationDate: formatDate(regDate.toISOString()),
+        categoryName: categoryName,
+        registrar: registrar,
+        renewLink: domainName.endsWith('.pp.ua') ? 'https://nic.ua/en/my/domains' : '',
+        renewCycle: { value: 1, unit: 'year' },
+        notifySettings: { useGlobalSettings: true, enabled: true, notifyDays: 30 }
+      });
+    }
+  }
+  return parsedDomains;
 }
 
 // JSON响应工具函数
@@ -4077,6 +4132,10 @@ const getHTMLContent = (title) => `
                 <button class="btn btn-success btn-action add-domain-btn" data-bs-toggle="modal" data-bs-target="#addDomainModal">
                     <i class="iconfont icon-jia" style="color: white;"></i> <span style="color: white;">添加域名</span>
                 </button>
+				<!-- 新增：批量导入按钮 -->
+                <button class="btn btn-primary btn-action batch-import-btn" data-bs-toggle="modal" data-bs-target="#batchImportModal">
+                    <i class="iconfont icon-jia" style="color: white;"></i> <span style="color: white;">批量导入</span>
+                </button>
                 <div class="dropdown">
                     <button class="btn btn-danger btn-action sort-btn" type="button" id="sortDropdown" data-bs-toggle="dropdown" aria-expanded="false">
                         <i class="iconfont icon-paixu" style="color: white;"></i> <span style="color: white;">域名排序</span>
@@ -4259,6 +4318,29 @@ const getHTMLContent = (title) => `
             </div>
         </div>
     </div>
+
+	<!-- ▼▼▼【在此处新增：批量导入模态框】▼▼▼ -->
+    <div class="modal fade" id="batchImportModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="iconfont icon-fenlei"></i> 批量文本导入与自动分类</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">直接将包含域名和到期时间的整段文本粘贴至下方，系统将自动清洗识别、按推算注册季度创建分类并摆放到首页监控：</p>
+                    <div class="mb-3">
+                        <textarea id="batchRawText" class="form-control font-monospace" rows="8" placeholder="例：&#10;zzt.pp.ua  Parking NS  02 Jun 2027  2772175  Renew&#10;yyc.pp.ua  Custom NS   27 Feb 2027  2673812  Renew"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="iconfont icon-xmark"></i> 取消</button>
+                    <button type="button" class="btn btn-success" id="startBatchImportBtn"><i class="iconfont icon-check"></i> 开始自动分类导入</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- ▲▲▲【新增结束】▲▲▲ -->
     
     <!-- 分类管理模态框 -->
     <div class="modal fade" id="categoryManageModal" tabindex="-1">
@@ -4589,6 +4671,49 @@ const getHTMLContent = (title) => `
             // 保存域名按钮
             document.getElementById('saveDomainBtn').addEventListener('click', saveDomain);
             
+            // ▼▼▼【在此处新增：批量导入提交按钮事件】▼▼▼
+            const startBatchImportBtn = document.getElementById('startBatchImportBtn');
+            if (startBatchImportBtn) {
+                startBatchImportBtn.addEventListener('click', async function() {
+                    const text = document.getElementById('batchRawText').value.trim();
+                    if (!text) {
+                        showAlert('danger', '请先粘贴文本');
+                        return;
+                    }
+
+                    const originalHtml = this.innerHTML;
+                    this.disabled = true;
+                    this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>正在解析导入...';
+
+                    try {
+                        const response = await fetch('/api/batch-import', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text })
+                        });
+
+                        const result = await response.json();
+                        if (response.ok && result.success) {
+                            showAlert('success', result.message || '导入成功');
+                            bootstrap.Modal.getInstance(document.getElementById('batchImportModal')).hide();
+                            document.getElementById('batchRawText').value = '';
+                            // 重新加载分类与域名数据并渲染首页
+                            await loadCategories();
+                            await loadDomains();
+                            renderDomainList();
+                        } else {
+                            showAlert('danger', result.error || '导入失败');
+                        }
+                    } catch (error) {
+                        showAlert('danger', '请求出错: ' + error.message);
+                    } finally {
+                        this.disabled = false;
+                        this.innerHTML = originalHtml;
+                    }
+                });
+            }
+            // ▲▲▲【新增结束】▲▲▲
+            
             // 确认删除按钮
             document.getElementById('confirmDeleteBtn').addEventListener('click', deleteDomain);
             
@@ -4638,8 +4763,8 @@ const getHTMLContent = (title) => `
                 document.getElementById('renewLink').classList.remove('auto-filled');
             });
             
-            // 添加模态框焦点管理 - 让Bootstrap自己处理aria-hidden
-            const modals = ['addDomainModal', 'categoryManageModal', 'settingsModal', 'deleteDomainModal', 'renewDomainModal', 'deleteCategoryModal'];
+            // 添加模态框焦点管理 - 让Bootstrap自己处理aria-hidden（已将 batchImportModal 加入数组）
+            const modals = ['addDomainModal', 'batchImportModal', 'categoryManageModal', 'settingsModal', 'deleteDomainModal', 'renewDomainModal', 'deleteCategoryModal'];
             modals.forEach(modalId => {
                 const modalElement = document.getElementById(modalId);
                 if (modalElement) {
@@ -7267,6 +7392,101 @@ async function handleApiRequest(request) {
       return jsonResponse(domain, 201);
     } catch (error) {
       return jsonResponse({ error: '添加域名失败' }, 400);
+    }
+  }
+
+  // 批量导入并自动分类域名 API（新增部分）
+  if (path === '/api/batch-import' && request.method === 'POST') {
+    try {
+      const { text } = await request.json();
+      if (!text || !text.trim()) {
+        return jsonResponse({ error: '请粘贴包含域名和日期的文本' }, 400);
+      }
+
+      const domainList = parseBatchDomainText(text);
+      if (domainList.length === 0) {
+        return jsonResponse({ error: '未能识别出有效的域名和到期时间' }, 400);
+      }
+
+      // 1. 获取现有分类，若对应季度批次分类不存在则自动创建
+      let categories = await getCategories();
+      const catMap = new Map();
+      categories.forEach(c => catMap.set(c.name, c.id));
+
+      let categoriesUpdated = false;
+      for (const item of domainList) {
+        if (!catMap.has(item.categoryName)) {
+          const maxOrder = Math.max(0, ...categories.map(c => c.order || 0));
+          const newCat = {
+            id: 'cat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+            name: item.categoryName,
+            description: `${item.categoryName}自动分类`,
+            order: maxOrder + 1,
+            isDefault: false,
+            createdAt: new Date().toISOString()
+          };
+          categories.push(newCat);
+          catMap.set(item.categoryName, newCat.id);
+          categoriesUpdated = true;
+        }
+      }
+      if (categoriesUpdated) {
+        await DOMAIN_MONITOR.put('categories', JSON.stringify(categories));
+      }
+
+      // 2. 获取现有域名数据进行批量合并/覆盖
+      let currentDomains = await getDomains();
+      let addedCount = 0;
+      let updatedCount = 0;
+
+      for (const item of domainList) {
+        const categoryId = catMap.get(item.categoryName) || 'default';
+        const existIndex = currentDomains.findIndex(d => d.name.toLowerCase() === item.name.toLowerCase());
+
+        if (existIndex > -1) {
+          // 更新已有域名
+          currentDomains[existIndex] = {
+            ...currentDomains[existIndex],
+            expiryDate: item.expiryDate,
+            registrationDate: item.registrationDate,
+            categoryId: categoryId,
+            registrar: item.registrar || currentDomains[existIndex].registrar,
+            updatedAt: new Date().toISOString()
+          };
+          updatedCount++;
+        } else {
+          // 新增域名
+          currentDomains.push({
+            id: crypto.randomUUID(),
+            name: item.name,
+            expiryDate: item.expiryDate,
+            registrationDate: item.registrationDate,
+            registrar: item.registrar,
+            registeredAccount: '',
+            categoryId: categoryId,
+            customNote: '',
+            noteColor: 'tag-blue',
+            renewLink: item.renewLink,
+            renewCycle: item.renewCycle,
+            price: null,
+            lastRenewed: null,
+            notifySettings: item.notifySettings,
+            createdAt: new Date().toISOString()
+          });
+          addedCount++;
+        }
+      }
+
+      // 3. 存入 KV
+      await DOMAIN_MONITOR.put('domains', JSON.stringify(currentDomains));
+
+      return jsonResponse({
+        success: true,
+        message: `成功导入 ${addedCount} 个新域名，更新 ${updatedCount} 个已有域名`,
+        importedCount: domainList.length
+      });
+    } catch (error) {
+      return jsonResponse({ error: '批量导入失败: ' + error.message }, 500);
     }
   }
   
